@@ -146,6 +146,8 @@ final class Wsaa
             throw new \RuntimeException('Certificado o clave privada no encontrados.');
         }
 
+        $this->validateCredentials($certPath, $keyPath);
+
         $tmpIn = tmpfile();
         $tmpOut = tmpfile();
 
@@ -300,6 +302,47 @@ final class Wsaa
         $directory = dirname(sprintf($this->keyPathPattern, $normalizedCuit));
 
         return $directory . DIRECTORY_SEPARATOR . 'request.csr';
+    }
+
+    private function validateCredentials(string $certPath, string $keyPath): void
+    {
+        $certContents = file_get_contents($certPath);
+        if ($certContents === false || trim($certContents) === '') {
+            throw new \RuntimeException(sprintf(
+                'El certificado esta vacio o no se puede leer: %s. Debes guardar en ese archivo el cert.crt emitido por ARCA, no el CSR.',
+                $certPath
+            ));
+        }
+
+        $keyContents = file_get_contents($keyPath);
+        if ($keyContents === false || trim($keyContents) === '') {
+            throw new \RuntimeException(sprintf('La clave privada esta vacia o no se puede leer: %s.', $keyPath));
+        }
+
+        $certificate = openssl_x509_read($certContents);
+        if ($certificate === false) {
+            throw new \RuntimeException(sprintf(
+                'El certificado no tiene un formato X509/PEM valido: %s. Verifica que sea el cert.crt emitido por ARCA.',
+                $certPath
+            ));
+        }
+
+        $privateKey = openssl_pkey_get_private($keyContents, $this->keyPassphrase ?? '');
+        if ($privateKey === false) {
+            throw new \RuntimeException(sprintf(
+                'La clave privada no se puede abrir%s: %s.',
+                $this->keyPassphrase ? ' con la passphrase configurada' : '',
+                $keyPath
+            ));
+        }
+
+        if (!openssl_x509_check_private_key($certificate, $privateKey)) {
+            throw new \RuntimeException(sprintf(
+                'El certificado %s no corresponde a la clave privada %s.',
+                $certPath,
+                $keyPath
+            ));
+        }
     }
 
     /**

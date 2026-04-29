@@ -229,6 +229,12 @@ Por defecto:
 - `storage/app/public/{cuit}/cert.crt`
 - `storage/app/public/{cuit}/key.key`
 
+Importante:
+
+- `key.key` y `request.csr` los genera la libreria.
+- `cert.crt` debe ser el certificado emitido por ARCA luego de subir `request.csr`.
+- Si `cert.crt` esta vacio, contiene el CSR o no corresponde con `key.key`, WSAA puede responder con errores remotos opacos como `javax.ejb.EJBException: java.lang.NullPointerException`.
+
 Configuracion asociada:
 
 ```dotenv

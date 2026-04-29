@@ -183,6 +183,10 @@ try {
 
 **Troubleshooting común**:
 - _"Certificado o clave privada no encontrados"_: Verificar rutas en config `arca.php`.
+- _"El certificado esta vacio o no se puede leer"_: En `storage/app/public/{cuit}/cert.crt` debe estar el certificado emitido por ARCA, no `request.csr` ni un archivo vacio.
+- _"El certificado no tiene un formato X509/PEM valido"_: El contenido de `cert.crt` no es un certificado PEM/X509 valido o fue copiado con formato incorrecto.
+- _"El certificado ... no corresponde a la clave privada ..."_: El `cert.crt` cargado no fue emitido para la `key.key` de ese mismo CUIT.
+- _"Error WSAA: javax.ejb.EJBException: java.lang.NullPointerException"_: Suele indicar CMS invalido por certificado vacio, incorrecto o desalineado con la clave privada.
 - _"Firma CMS falló"_: Revisar permisos de lectura en `arca.key` y `arca.crt`.
 - _"TLS dh key too small"_: Problema cliente OpenSSL, intentar con `curl -v` desde CLI primero.
 
