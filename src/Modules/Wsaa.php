@@ -162,10 +162,9 @@ final class Wsaa
             stream_get_meta_data($tmpIn)['uri'],
             stream_get_meta_data($tmpOut)['uri'],
             $certContent,
-            $keyContent,
+            $this->keyPassphrase ? [$keyContent, $this->keyPassphrase] : $keyContent,
             [],
-            PKCS7_DETACHED,
-            $this->keyPassphrase ? $this->keyPassphrase : ''
+            PKCS7_DETACHED
         );
 
         if (!$openssl) {
