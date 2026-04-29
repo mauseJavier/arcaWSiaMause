@@ -2,3 +2,13 @@
 /.idea
 /.vscode
 /.phpunit.result.cache
+/.docker/
+/docker-compose.yml
+/Makefile
+/DOCKER_TESTING.md
+/docker/
+/examples/factura_c_prod.php
+/examples/padron_prod.php
+/examples/ptos_prod.php
+/examples/20358337164
+/public/

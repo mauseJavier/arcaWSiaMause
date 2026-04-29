@@ -205,6 +205,11 @@ $cae = ArcaWsfev1::requestCae($companyCuit, $invoice);
 
 Ver [HOMOLOGACION.md](HOMOLOGACION.md) para pruebas paso a paso en ambiente de testing.
 
+## Pruebas con Docker
+
+Ver [DOCKER_TESTING.md](DOCKER_TESTING.md) para levantar un Laravel consumidor en contenedor,
+instalar esta librería y ejecutar pruebas de WSAA/WSFEv1.
+
 ## Guia para IA
 
 Esta seccion deja el contrato de uso explicito para que una IA pueda integrar esta libreria dentro de otro proyecto Laravel sin asumir firmas o rutas incorrectas.

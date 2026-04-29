@@ -11,7 +11,7 @@ use Mause\LaravelArca\Facades\ArcaWsfev1;
  */
 class ArcaTestController extends Controller
 {
-    private string $companyCuit = '30712345678';
+    private string $companyCuit = '20358337164';
 
     /**
      * GET /arca/test - Dashboard de pruebas.

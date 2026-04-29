@@ -98,8 +98,16 @@ final class Wsfev1
             ]);
 
             $types = [];
-            if (isset($result->FEParamGetTiposCbteResult->CbteTipo)) {
-                foreach ((array) $result->FEParamGetTiposCbteResult->CbteTipo as $type) {
+            $cbteTipos = null;
+            if (isset($result->FEParamGetTiposCbteResult->ResultGet->CbteTipo)) {
+                $cbteTipos = $result->FEParamGetTiposCbteResult->ResultGet->CbteTipo;
+            } elseif (isset($result->FEParamGetTiposCbteResult->CbteTipo)) {
+                // Compatibilidad con respuestas antiguas.
+                $cbteTipos = $result->FEParamGetTiposCbteResult->CbteTipo;
+            }
+
+            if ($cbteTipos !== null) {
+                foreach ((array) $cbteTipos as $type) {
                     $types[] = [
                         'id' => (int) $type->Id,
                         'name' => (string) $type->Desc,

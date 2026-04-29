@@ -50,12 +50,13 @@ final class Wsaa
     public function generateTra(string $wsn = 'wsfe'): string
     {
         $now = new DateTime('now', new DateTimeZone('UTC'));
-        $expirationTime = (clone $now)->modify('+12 hours');
+        $generationTime = (clone $now)->modify('-60 seconds');
+        $expirationTime = (clone $now)->modify('+60 seconds');
 
         $tra = sprintf(
-            '<?xml version="1.0" encoding="UTF-8"?><loginTicketRequest version="1.0"><header><source>WEBAPP</source><destination>AFIP</destination><uniqueId>%d</uniqueId><generationTime>%s</generationTime><expirationTime>%s</expirationTime></header><service><name>%s</name></service></loginTicketRequest>',
-            (int) (microtime(true) * 1000),
-            $now->format('c'),
+            '<?xml version="1.0" encoding="UTF-8"?><loginTicketRequest version="1.0"><header><uniqueId>%d</uniqueId><generationTime>%s</generationTime><expirationTime>%s</expirationTime></header><service>%s</service></loginTicketRequest>',
+            time(),
+            $generationTime->format('c'),
             $expirationTime->format('c'),
             $wsn
         );
@@ -155,16 +156,13 @@ final class Wsaa
         fwrite($tmpIn, $tra);
         rewind($tmpIn);
 
-        $keyContent = file_get_contents($keyPath);
-        $certContent = file_get_contents($certPath);
-
         $openssl = openssl_pkcs7_sign(
             stream_get_meta_data($tmpIn)['uri'],
             stream_get_meta_data($tmpOut)['uri'],
-            $certContent,
-            $this->keyPassphrase ? [$keyContent, $this->keyPassphrase] : $keyContent,
+            'file://' . realpath($certPath),
+            $this->keyPassphrase ? ['file://' . realpath($keyPath), $this->keyPassphrase] : 'file://' . realpath($keyPath),
             [],
-            PKCS7_DETACHED
+            0
         );
 
         if (!$openssl) {
@@ -220,7 +218,17 @@ final class Wsaa
                 ['exceptions' => true, 'trace' => true]
             );
 
-            $response = $client->loginCms(['in' => $cms]);
+            try {
+                $response = $client->loginCms(['in' => $cms]);
+            } catch (\SoapFault $fault) {
+                // Algunos WSDL de WSAA exponen loginCms con el argumento "in0".
+                if (str_contains($fault->getMessage(), "'in0'")) {
+                    $response = $client->loginCms(['in0' => $cms]);
+                } else {
+                    throw $fault;
+                }
+            }
+
             $xmlResponse = $response->loginCmsReturn;
 
             // Parsea respuesta
@@ -258,14 +266,16 @@ final class Wsaa
      */
     private function extractCmsBody(string $cms): string
     {
-        $start = strpos($cms, '-----BEGIN PKCS7-----');
-        $end = strpos($cms, '-----END PKCS7-----') + strlen('-----END PKCS7-----');
-
-        if ($start === false || $end === false) {
-            return $cms;
+        if (preg_match('/-----BEGIN PKCS7-----(.*?)-----END PKCS7-----/s', $cms, $matches) === 1) {
+            return trim($matches[1]);
         }
 
-        return substr($cms, $start, $end - $start);
+        // Formato S/MIME: elimina headers MIME y conserva el cuerpo CMS base64.
+        if (preg_match('/\R\R(.*)$/s', $cms, $matches) === 1) {
+            return trim($matches[1]);
+        }
+
+        return trim($cms);
     }
 
     /**

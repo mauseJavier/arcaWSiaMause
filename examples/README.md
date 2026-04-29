@@ -69,6 +69,30 @@ O con PHPUnit:
 php artisan test tests/WsPadronTest.php
 ```
 
+### `ptos_prod.php`
+Script de ejemplo para consultar puntos de venta en produccion (WSFEv1).
+
+**Uso:**
+```bash
+docker compose run --rm arca-dev php /workspace/examples/ptos_prod.php
+```
+
+### `factura_c_prod.php`
+Script de ejemplo para emitir una Factura C en produccion.
+
+**Uso:**
+```bash
+docker compose run --rm arca-dev php /workspace/examples/factura_c_prod.php
+```
+
+### `padron_prod.php`
+Script de ejemplo para consultar padron en produccion con un CUIT representante.
+
+**Uso:**
+```bash
+docker compose run --rm arca-dev php /workspace/examples/padron_prod.php
+```
+
 ---
 
 ## Flujo Típico de Integración
