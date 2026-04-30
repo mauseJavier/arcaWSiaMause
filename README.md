@@ -64,6 +64,12 @@ ARCA_WSAA_PROD_URL=https://wsaa.afip.gov.ar/ws/services/LoginCms
 ARCA_CERT_PATH_PATTERN=storage/app/public/%s/cert.crt
 ARCA_KEY_PATH_PATTERN=storage/app/public/%s/key.key
 ARCA_KEY_PASSPHRASE=
+
+# WSN de padrón (nombre del servicio que el certificado tiene autorizado en ARCA)
+# Un WSN incorrecto produce: "Computador no autorizado a acceder al servicio"
+ARCA_PADRON_SERVICE_CUIT=ws_sr_constancia_inscripcion
+ARCA_PADRON_SERVICE_CUIL=ws_sr_padron_a13
+ARCA_PADRON_SERVICE_DNI=ws_sr_padron_a13
 ```
 
 En esquema multiempresa, `%s` se reemplaza por el CUIT emisor. Ejemplo:
@@ -118,59 +124,72 @@ $cae = ArcaWsfev1::requestCae($companyCuit, $invoice);
 
 ### WS Padrones - Consulta de CUIT, CUIL, DNI
 
+**Requisito de certificado**: el certificado de cada empresa debe tener autorizado en ARCA el WSN
+correspondiente a cada operación:
+- `ws_sr_constancia_inscripcion` → para consultas por CUIT (persona jurídica)
+- `ws_sr_padron_a13` → para consultas por CUIL y por DNI
+
+Un WSN incorrecto en el certificado produce el error "Computador no autorizado a acceder al servicio". Ver catálogo oficial: https://www.afip.gob.ar/ws/documentacion/catalogo.asp
+
 ```php
 use Mause\\LaravelArca\\Facades\\ArcaWsPadron;
 
 $companyCuit = '30712345678';
 
-// Consulta automática (detecta DNI, CUIL o CUIT automáticamente)
+// Consulta automática (detecta DNI, CUIL o CUIT)
 $result = ArcaWsPadron::consultarPadron($companyCuit, '12345678');
 // Retorna:
-// {
+// [
 //   'type' => 'dni'|'cuil'|'cuit',
-//   'data' => [...datos de la persona...],
-//   'error' => null|'error message'
-// }
+//   'data' => [...],
+//   'error' => null|'mensaje'
+// ]
 
-// Consulta específica por DNI
+// Consulta por DNI — usa ws_sr_padron_a13 (PersonaServiceA13)
+// Flujo interno: getIdPersonaListByDocumento → getPersona
+// Puede retornar array cuando el DNI tiene más de un titular (ej. homónimos)
 $dataDni = ArcaWsPadron::consultarPorDni($companyCuit, '12345678');
 
-// Consulta específica por CUIT (persona jurídica)
+// Consulta por CUIT (persona jurídica) — usa ws_sr_constancia_inscripcion
 $dataCuit = ArcaWsPadron::consultarPersona($companyCuit, '30112345678', 'cuit');
 
-// Consulta específica por CUIL (persona física)
+// Consulta por CUIL (persona física) — usa ws_sr_padron_a13
 $dataCuil = ArcaWsPadron::consultarPersona($companyCuit, '27123456789', 'cuil');
 ```
 
 #### Detección automática de tipo
 
-El módulo WsPadron detecta automáticamente el tipo de identificador:
-- **DNI**: 8 dígitos
-- **CUIL**: 11 dígitos que comienzan con 27 o 28
-- **CUIT**: 11 dígitos restantes
+El módulo detecta automáticamente el tipo de identificador:
+- **DNI**: 8 dígitos → `ws_sr_padron_a13` (PersonaServiceA13)
+- **CUIL**: 11 dígitos que comienzan con 27 o 28 → `ws_sr_padron_a13`
+- **CUIT**: 11 dígitos restantes → `ws_sr_constancia_inscripcion`
 
 ```php
 // Estos se procesan automáticamente con el padrón correcto
-ArcaWsPadron::consultarPadron($companyCuit, '12345678');    // → padrón DNI
-ArcaWsPadron::consultarPadron($companyCuit, '27123456789');  // → padrón CUIL
-ArcaWsPadron::consultarPadron($companyCuit, '30112345678');  // → padrón CUIT
+ArcaWsPadron::consultarPadron($companyCuit, '12345678');    // → PersonaServiceA13 (DNI)
+ArcaWsPadron::consultarPadron($companyCuit, '27123456789');  // → PersonaServiceA13 (CUIL)
+ArcaWsPadron::consultarPadron($companyCuit, '30112345678');  // → constancia_inscripcion (CUIT)
 ```
 
 #### Datos retornados
 
-**Para DNI/CUIL (Persona Física)**:
-- `cuit`, `cuil`, `nombre`, `apellido`
+**Para DNI (persona física via PersonaServiceA13)**:
+- `idPersona`, `tipoClave`, `tipoPersona`
+- `nombre`, `apellido`, `razonSocial`
 - `tipoDocumento`, `numeroDocumento`
 - `estado`, `domicilio`
-- `monotributo`, `empleador`
+- Cuando el DNI tiene más de un titular, `data` es un array de personas
 
-**Para CUIT (Persona Jurídica)**:
+**Para CUIL (persona física)**:
+- mismos campos que DNI
+
+**Para CUIT (persona jurídica)**:
 - `cuit`, `razonSocial`
 - `tipoPersoneria`, `estado`
 - `domicilio`, `domicilioFiscal`
 - `inscripcionesIva`
 
-**IMPORTANTE**: Requiere acceso al servicio `padron` en tu certificado AFIP.
+**IMPORTANTE**: El certificado debe estar autorizado en ARCA para los WSN correspondientes (`ws_sr_padron_a13` y/o `ws_sr_constancia_inscripcion`). No basta con autorizar un servicio genérico `padron`.
 
 ---
 
@@ -255,6 +274,10 @@ ArcaWsaa::requestTa(string|int $companyCuit, string $wsn = 'wsfe'): ?array
 ArcaWsfev1::getInvoiceTypes(string|int $companyCuit): ?array
 ArcaWsfev1::getLastAuthorizedNumber(string|int $companyCuit, int $ptoVta, int $cbteType): ?array
 ArcaWsfev1::requestCae(string|int $companyCuit, array $invoice): ?array
+
+ArcaWsPadron::consultarPadron(string|int $companyCuit, string|int $identifier): ?array
+ArcaWsPadron::consultarPorDni(string|int $companyCuit, string|int $numeroDni): array
+ArcaWsPadron::consultarPersona(string|int $companyCuit, string|int $cuitOCuil, string $personType = 'cuit'): array
 ```
 
 ### Flujo correcto para una IA integradora
@@ -369,10 +392,14 @@ $response = ArcaWsfev1::requestCae($companyCuit, $invoice);
 - `src/Services/ArcaClient.php` - Cliente base de configuracion
 - `src/Modules/Wsaa.php` - Modulo WSAA (autenticacion)
 - `src/Modules/Wsfev1.php` - Modulo WSFEv1 (facturacion)
+- `src/Modules/WsPadron.php` - Modulo WsPadron (padrones CUIT/CUIL/DNI)
+- `src/Contracts/WsaaInterface.php` - Interfaz de WSAA
 - `src/Facades/Arca.php` - Facade general
 - `src/Facades/ArcaWsaa.php` - Facade WSAA
 - `src/Facades/ArcaWsfev1.php` - Facade WSFEv1
+- `src/Facades/ArcaWsPadron.php` - Facade WsPadron
 - `config/arca.php` - Configuracion del paquete
+- `tests/` - Suite de pruebas unitarias (PHPUnit + Orchestra Testbench)
 
 ## Ejemplos
 
@@ -386,7 +413,6 @@ Ver carpeta `examples/`:
 - Agregar soporte para WSMTXCA (facturacion con detalle de items).
 - Agregar soporte para WSFEXv1 (facturacion de exportacion).
 - Implementar persistencia de CAE en base de datos.
-- Agregar tests automatizados con Orchestra Testbench.
 - Generar PDF/XML firmado de comprobante.
 
 ## License

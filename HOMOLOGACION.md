@@ -16,6 +16,11 @@ Esta guia ya esta preparada para que una IA o integrador humano consuma la libre
     ARCA_CERT_PATH_PATTERN=storage/app/public/%s/cert.crt
     ARCA_KEY_PATH_PATTERN=storage/app/public/%s/key.key
    ARCA_KEY_PASSPHRASE=  # Si tu clave tiene frase secreta, úsala aquí
+
+   # WSN de padrón — deben coincidir con el servicio autorizado en el certificado
+   ARCA_PADRON_SERVICE_CUIT=ws_sr_constancia_inscripcion
+   ARCA_PADRON_SERVICE_CUIL=ws_sr_padron_a13
+   ARCA_PADRON_SERVICE_DNI=ws_sr_padron_a13
    ```
 
     Para cada empresa emisora, la librería buscará:
@@ -288,9 +293,17 @@ if ($result && !$result['error']) {
 
 ## Consulta de Padrones (CUIT, CUIL, DNI)
 
-El módulo WsPadron permite consultar datos de personas jurídicas (empresas) y físicas de los registros de AFIP.
+El módulo WsPadron usa WSN específicos por tipo de operación. El certificado debe estar autorizado
+en ARCA para cada WSN que vayas a usar. Un WSN incorrecto produce el error
+"Computador no autorizado a acceder al servicio".
 
-**Importante**: Antes de usar estos servicios, solicita acceso al servicio `padron` en tu certificado SOAP a través del portal de AFIP.
+| Tipo de consulta | WSN requerido | Endpoint SOAP |
+|-----------------|---------------|---------------|
+| CUIT (jurídica) | `ws_sr_constancia_inscripcion` | PersonaServiceA4 / padron/v1/persona |
+| CUIL (física) | `ws_sr_padron_a13` | PersonaServiceA13 |
+| DNI | `ws_sr_padron_a13` | PersonaServiceA13 |
+
+Catálogo oficial: https://www.afip.gob.ar/ws/documentacion/catalogo.asp
 
 ### Contrato WsPadron
 
@@ -303,9 +316,9 @@ ArcaWsPadron::consultarPersona(string|int $companyCuit, string|int $cuitOCuil, s
 ### 8. Consulta automática (detecta tipo automáticamente)
 
 El método `consultarPadron` detecta automáticamente si pasas DNI, CUIL o CUIT:
-- **DNI**: 8 dígitos → consulta WS personafisica
-- **CUIL**: 11 dígitos que comienzan con 27 o 28 → consulta WS padron/a13
-- **CUIT**: 11 dígitos (por defecto) → consulta WS padron/v1
+- **DNI**: 8 dígitos → usa `ws_sr_padron_a13` (PersonaServiceA13)
+- **CUIL**: 11 dígitos que comienzan con 27 o 28 → usa `ws_sr_padron_a13`
+- **CUIT**: 11 dígitos (por defecto) → usa `ws_sr_constancia_inscripcion`
 
 **Código**:
 ```php
@@ -355,6 +368,12 @@ if ($resultCuit && !$resultCuit['error']) {
 
 ### 9. Consulta específica por DNI
 
+**Flujo interno** (dos pasos sobre PersonaServiceA13):
+1. `getIdPersonaListByDocumento(documento)` → devuelve lista de `idPersona`
+2. `getPersona(idPersona)` → devuelve datos completos por cada id
+
+Cuando un DNI tiene más de un titular (homónimos), `data` es un array de personas en lugar de un objeto único.
+
 **Código**:
 ```php
 use Mause\LaravelArca\Facades\ArcaWsPadron;
@@ -365,26 +384,33 @@ $result = ArcaWsPadron::consultarPorDni($companyCuit, '12345678');
 
 if ($result && !$result['error']) {
     $data = $result['data'];
-    echo 'CUIT: ' . $data['cuit'] . PHP_EOL;
-    echo 'CUIL: ' . $data['cuil'] . PHP_EOL;
-    echo 'Nombre: ' . $data['nombre'] . ' ' . $data['apellido'] . PHP_EOL;
-    echo 'Documento: ' . $data['tipoDocumento'] . ' ' . $data['numeroDocumento'] . PHP_EOL;
+    // Si hay un único resultado, $data es un array asociativo
+    // Si hay múltiples resultados (homónimos), $data es un array de arrays
+    if (isset($data['idPersona'])) {
+        // Un único titular
+        echo 'idPersona: ' . $data['idPersona'] . PHP_EOL;
+        echo 'Nombre: ' . $data['nombre'] . ' ' . $data['apellido'] . PHP_EOL;
+        echo 'Documento: ' . $data['tipoDocumento'] . ' ' . $data['numeroDocumento'] . PHP_EOL;
+        echo 'Estado: ' . $data['estado'] . PHP_EOL;
+    } else {
+        // Múltiples titulares
+        foreach ($data as $persona) {
+            echo 'idPersona: ' . $persona['idPersona'] . ' — ' . $persona['nombre'] . PHP_EOL;
+        }
+    }
 } else {
     echo 'ERROR: ' . ($result['error'] ?? 'desconocido');
 }
 ```
 
-**Datos retornados**:
-- `cuit`: CUIT de la persona física
-- `cuil`: CUIL de la persona física
-- `nombre`: Nombre
-- `apellido`: Apellido
-- `tipoDocumento`: Tipo de documento (DNI, Pasaporte, etc.)
-- `numeroDocumento`: Número del documento
-- `estado`: Activo/Inactivo
-- `domicilio`: Información del domicilio
-- `monotributo`: Si está inscripto en Monotributo
-- `empleador`: Si es empleador
+**Datos retornados** (campos del WSDL oficial `PersonaServiceA13`):
+- `idPersona`: ID interno de ARCA
+- `tipoClave`: CUIT o CUIL
+- `tipoPersona`: Física o Jurídica
+- `nombre`, `apellido`, `razonSocial`
+- `tipoDocumento`, `numeroDocumento`
+- `estado`: estadoClave (Activo/Inactivo)
+- `domicilio`: array de domicilios registrados
 
 ### 10. Consulta de persona jurídica (CUIT)
 
@@ -474,10 +500,12 @@ if ($result === null) {
 
 | Problema | Causa | Solución |
 |----------|-------|----------|
-| "No se pudo obtener Ticket de Acceso" | Certificado no autorizado para `padron` | Solicitar acceso a servicio `padron` en AFIP |
+| "No se pudo obtener Ticket de Acceso" | TA falla por certificado no autorizado para el WSN | Solicitar en ARCA el acceso al WSN exacto (`ws_sr_padron_a13`, `ws_sr_constancia_inscripcion`) |
+| "Computador no autorizado a acceder al servicio" | WSN del TRA no coincide con lo autorizado en el certificado | Verificar `ARCA_PADRON_SERVICE_CUIT/CUIL/DNI` contra el certificado en el portal de ARCA |
+| "DNI no encontrado en el padrón" | El DNI no existe o `getIdPersonaListByDocumento` retornó lista vacía | Verificar que el DNI sea válido y que el certificado tenga acceso a `ws_sr_padron_a13` |
 | "Persona no encontrada" | CUIT/CUIL no existe en AFIP | Verificar que el identificador sea válido |
-| No retorna DNI en datos | Certificado sin acceso a datos personales | Solicitar ampliación de permisos en AFIP |
-| Timeout en consulta | Servidor AFIP no responde | Reintentar, AFIP tiene límites de ~10 req/s |
+| No retorna `cuit`/`cuil` directamente en DNI | Cambio de API: PersonaServiceA13 retorna `idPersona` y `tipoClave`, no `cuit`/`cuil` directamente | Usar `idPersona` + `tipoClave` para identificar la persona |
+| Timeout en consulta | Servidor AFIP no responde | Reintentar; AFIP tiene límites de ~10 req/s |
 
 ---
 

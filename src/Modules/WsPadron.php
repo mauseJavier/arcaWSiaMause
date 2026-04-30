@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mause\LaravelArca\Modules;
 
 use Illuminate\Support\Facades\Log;
+use Mause\LaravelArca\Contracts\WsaaInterface;
 
 /**
  * WS Padrones - Consulta de datos de personas (CUIT, CUIL, DNI).
@@ -16,22 +17,47 @@ use Illuminate\Support\Facades\Log;
  */
 final class WsPadron
 {
-    private string $wsPadronUrl;
+    /**
+     * Endpoint oficial del servicio PersonaServiceA4 (ws_sr_constancia_inscripcion).
+     * Usado para consultas de personas jurídicas por CUIT.
+     * Fuente: https://aws.afip.gov.ar/sr-padron/webservices/personaServiceA4?wsdl
+     */
+    private string $wsA4Url;
 
-    private Wsaa $wsaa;
+    /**
+     * Endpoint oficial del servicio PersonaServiceA13 (ws_sr_padron_a13).
+     * Usado para consultas por CUIL y por DNI (getIdPersonaListByDocumento).
+     * Fuente: https://aws.afip.gov.ar/sr-padron/webservices/personaServiceA13?wsdl
+     */
+    private string $wsA13Url;
+
+    private WsaaInterface $wsaa;
 
     private string $mode;
+
+    /** @var array{cuit: string, cuil: string, dni: string|null} */
+    private array $wsnMap;
 
     /**
      * @param array<string,mixed> $config
      */
-    public function __construct(Wsaa $wsaa, array $config = [])
+    public function __construct(WsaaInterface $wsaa, array $config = [])
     {
         $this->wsaa = $wsaa;
         $this->mode = $config['mode'] ?? 'homologation';
-        $this->wsPadronUrl = $this->mode === 'production'
-            ? 'https://padse.afip.gov.ar/ws/padron'
-            : 'https://padsehomo.afip.gov.ar/ws/padron';
+        $this->wsA4Url = $this->mode === 'production'
+            ? 'https://aws.afip.gov.ar/sr-padron/webservices/personaServiceA4'
+            : 'https://awshomo.afip.gov.ar/sr-padron/webservices/personaServiceA4';
+        $this->wsA13Url = $this->mode === 'production'
+            ? 'https://aws.afip.gov.ar/sr-padron/webservices/personaServiceA13'
+            : 'https://awshomo.afip.gov.ar/sr-padron/webservices/personaServiceA13';
+
+        $padronServices = $config['padron']['services'] ?? [];
+        $this->wsnMap = [
+            'cuit' => (string) ($padronServices['cuit'] ?? 'ws_sr_padron_a4'),
+            'cuil' => (string) ($padronServices['cuil'] ?? 'ws_sr_padron_a13'),
+            'dni'  => (string) ($padronServices['dni'] ?? 'ws_sr_padron_a13'),
+        ];
     }
 
     /**
@@ -61,7 +87,14 @@ final class WsPadron
     }
 
     /**
-     * Consultar por DNI (servicios/personafisica).
+     * Consultar por DNI usando ws_sr_padron_a13.
+     *
+     * Flujo oficial de dos pasos:
+     * 1. getIdPersonaListByDocumento(documento) → lista de idPersona (CUIT/CUIL)
+     * 2. getPersona(idPersona) → datos completos de la persona
+     *
+     * Endpoint: PersonaServiceA13 (aws.afip.gov.ar/sr-padron/webservices/personaServiceA13)
+     * WSN:      ws_sr_padron_a13
      *
      * @return array{
      *     type: 'dni',
@@ -71,11 +104,14 @@ final class WsPadron
      */
     public function consultarPorDni(string|int $companyCuit, string|int $numeroDni): array
     {
-        $ta = $this->wsaa->requestTa($companyCuit, 'padron');
+        $wsn = $this->resolveWsn('dni');
+        $ta = $this->wsaa->requestTa($companyCuit, $wsn);
 
         if (!$ta) {
             Log::warning('WsPadron: No se pudo obtener TA para consulta DNI', [
-                'cuit' => $companyCuit,
+                'wsn' => $wsn,
+                'ambiente' => $this->mode,
+                'cuit_representante' => $companyCuit,
                 'dni' => $numeroDni,
             ]);
 
@@ -88,37 +124,65 @@ final class WsPadron
 
         $normalizedCuit = $this->normalizeCuit($companyCuit);
         $normalizedDni = $this->normalizeIdentifier($numeroDni);
+        $endpoint = $this->wsA13Url . '?wsdl';
 
         try {
             $client = new \SoapClient(
-                $this->wsPadronUrl . '/personafisica?wsdl',
-                ['exceptions' => true, 'trace' => true, 'soap_version' => SOAP_1_2]
+                $endpoint,
+                    ['exceptions' => true, 'trace' => true, 'soap_version' => SOAP_1_1]
             );
 
-            $result = $client->consultarPersonaFisica([
-                'token' => $ta['token'],
-                'sign' => $ta['sign'],
-                'cuitRepresentante' => (int) $normalizedCuit,
-                'numeroDni' => (int) $normalizedDni,
+            // Paso 1: obtener lista de idPersona (CUIT/CUIL) a partir del DNI.
+            $listResponse = $client->getIdPersonaListByDocumento([
+                'token'            => $ta['token'],
+                'sign'             => $ta['sign'],
+                'cuitRepresentada' => (int) $normalizedCuit,
+                'documento'        => $normalizedDni,
             ]);
 
-            $parsedData = $this->parsePersonaFisicaResponse($result);
+            $idPersonaList = $this->extractIdPersonaList($listResponse);
+
+            if (empty($idPersonaList)) {
+                return [
+                    'type'  => 'dni',
+                    'data'  => null,
+                    'error' => 'DNI no encontrado en el padrón',
+                ];
+            }
+
+            // Paso 2: obtener datos completos para cada idPersona.
+            $personas = [];
+            foreach ($idPersonaList as $idPersona) {
+                $personaResponse = $client->getPersona([
+                    'token'            => $ta['token'],
+                    'sign'             => $ta['sign'],
+                    'cuitRepresentada' => (int) $normalizedCuit,
+                    'idPersona'        => (int) $idPersona,
+                ]);
+                $parsed = $this->parsePersonaA13Response($personaResponse);
+                if ($parsed !== null) {
+                    $personas[] = $parsed;
+                }
+            }
 
             return [
-                'type' => 'dni',
-                'data' => $parsedData,
+                'type'  => 'dni',
+                'data'  => count($personas) === 1 ? $personas[0] : $personas,
                 'error' => null,
             ];
         } catch (\Exception $e) {
             Log::error('WsPadron: Error en consultarPorDni', [
-                'exception' => $e->getMessage(),
-                'dni' => $numeroDni,
-                'cuit' => $companyCuit,
+                'exception'        => $e->getMessage(),
+                'wsn'              => $wsn,
+                'endpoint'         => $endpoint,
+                'ambiente'         => $this->mode,
+                'cuit_representante' => $companyCuit,
+                'dni'              => $numeroDni,
             ]);
 
             return [
-                'type' => 'dni',
-                'data' => null,
+                'type'  => 'dni',
+                'data'  => null,
                 'error' => $e->getMessage(),
             ];
         }
@@ -136,11 +200,14 @@ final class WsPadron
      */
     public function consultarPersona(string|int $companyCuit, string|int $cuitOCuil, string $personType = 'cuit'): array
     {
-        $ta = $this->wsaa->requestTa($companyCuit, 'padron');
+        $wsn = $this->resolveWsn($personType);
+        $ta = $this->wsaa->requestTa($companyCuit, $wsn);
 
         if (!$ta) {
             Log::warning('WsPadron: No se pudo obtener TA para consulta de persona', [
-                'cuit' => $companyCuit,
+                'wsn' => $wsn,
+                'ambiente' => $this->mode,
+                'cuit_representante' => $companyCuit,
                 'consulta' => $cuitOCuil,
                 'tipo' => $personType,
             ]);
@@ -155,28 +222,28 @@ final class WsPadron
         $normalizedCuit = $this->normalizeCuit($companyCuit);
         $normalizedIdentifier = $this->normalizeCuit($cuitOCuil);
 
-        // Para CUIL usar servicio A13 (personas físicas)
-        // Para CUIT usar servicio v1 (personas jurídicas)
+        // Ambos servicios exponen getPersona(token, sign, cuitRepresentada, idPersona).
+        // En el padrón de ARCA el idPersona de una persona es su propio CUIT/CUIL numérico.
+        // Para CUIL usar PersonaServiceA13 (personas físicas / ws_sr_padron_a13)
+        // Para CUIT usar PersonaServiceA4 (personas jurídicas / ws_sr_constancia_inscripcion)
         $endpoint = $personType === 'cuil'
-            ? $this->wsPadronUrl . '/a13/persona?wsdl'
-            : $this->wsPadronUrl . '/v1/persona?wsdl';
+            ? $this->wsA13Url . '?wsdl'
+            : $this->wsA4Url . '?wsdl';
 
         try {
             $client = new \SoapClient(
                 $endpoint,
-                ['exceptions' => true, 'trace' => true, 'soap_version' => SOAP_1_2]
+                    ['exceptions' => true, 'trace' => true, 'soap_version' => SOAP_1_1]
             );
 
-            $result = $client->consultarPersona([
-                'token' => $ta['token'],
-                'sign' => $ta['sign'],
-                'cuitRepresentante' => (int) $normalizedCuit,
-                'cuitPersonaConsultada' => (int) $normalizedIdentifier,
+            $result = $client->getPersona([
+                'token'            => $ta['token'],
+                'sign'             => $ta['sign'],
+                'cuitRepresentada' => (int) $normalizedCuit,
+                'idPersona'        => (int) $normalizedIdentifier,
             ]);
 
-            $parsedData = $personType === 'cuil'
-                ? $this->parsePersonaFisicaResponse($result)
-                : $this->parsePersonaJuridicaResponse($result);
+            $parsedData = $this->parsePersonaA13Response($result);
 
             return [
                 'type' => $personType,
@@ -186,9 +253,12 @@ final class WsPadron
         } catch (\Exception $e) {
             Log::error('WsPadron: Error en consultarPersona', [
                 'exception' => $e->getMessage(),
-                'identifier' => $cuitOCuil,
-                'type' => $personType,
-                'cuit' => $companyCuit,
+                'wsn' => $wsn,
+                'endpoint' => $endpoint,
+                'ambiente' => $this->mode,
+                'cuit_representante' => $companyCuit,
+                'consulta' => $cuitOCuil,
+                'tipo' => $personType,
             ]);
 
             return [
@@ -197,6 +267,87 @@ final class WsPadron
                 'error' => $e->getMessage(),
             ];
         }
+    }
+
+    /**
+     * Resuelve el WSN (Web Service Name) oficial de ARCA para la operación indicada.
+     *
+     * El WSN se usa como elemento <service> del TRA enviado a WSAA. Debe coincidir
+     * exactamente con el servicio autorizado en el certificado. Un valor incorrecto
+     * provoca el error "Computador no autorizado a acceder al servicio".
+     *
+     * @throws \RuntimeException si el WSN no está configurado para la operación solicitada
+     */
+    private function resolveWsn(string $operationType): string
+    {
+        $wsn = $this->wsnMap[$operationType] ?? null;
+
+        if ($wsn === null || $wsn === '') {
+            throw new \RuntimeException(sprintf(
+                'WsPadron: WSN no configurado para la operación "%s". '
+                . 'Defina padron.services.%s en arca.php con el WSN oficial de ARCA '
+                . 'antes de usar este tipo de consulta (ver catalogo.asp).',
+                $operationType,
+                $operationType
+            ));
+        }
+
+        return $wsn;
+    }
+
+    /**
+     * Extrae la lista de idPersona de la respuesta de getIdPersonaListByDocumento.
+     *
+     * @param mixed $response
+     * @return array<int,int|string>
+     */
+    private function extractIdPersonaList($response): array
+    {
+        if (!is_object($response)) {
+            return [];
+        }
+
+        $data = $this->objectToArray($response);
+
+        // idPersonaListReturn.idPersona puede ser escalar o array
+        $raw = $data['idPersonaListReturn']['idPersona'] ?? [];
+        if (!is_array($raw)) {
+            $raw = [$raw];
+        }
+
+        return array_values(array_filter($raw, static fn ($v) => $v !== null && $v !== ''));
+    }
+
+    /**
+     * Parsear respuesta de getPersona del servicio PersonaServiceA13.
+     *
+     * Campos del WSDL oficial: idPersona, nombre, apellido, numeroDocumento,
+     * tipoDocumento, tipoClave, tipoPersona, estadoClave, domicilio[], razonSocial.
+     *
+     * @param mixed $response
+     * @return array<string,mixed>|null
+     */
+    private function parsePersonaA13Response($response): ?array
+    {
+        if (!is_object($response)) {
+            return null;
+        }
+
+        $data = $this->objectToArray($response);
+        $persona = $data['personaReturn']['persona'] ?? $data;
+
+        return [
+            'idPersona'       => $persona['idPersona'] ?? null,
+            'tipoClave'       => $persona['tipoClave'] ?? null,
+            'nombre'          => $persona['nombre'] ?? null,
+            'apellido'        => $persona['apellido'] ?? null,
+            'razonSocial'     => $persona['razonSocial'] ?? null,
+            'tipoPersona'     => $persona['tipoPersona'] ?? null,
+            'tipoDocumento'   => $persona['tipoDocumento'] ?? null,
+            'numeroDocumento' => $persona['numeroDocumento'] ?? null,
+            'estado'          => $persona['estadoClave'] ?? null,
+            'domicilio'       => $persona['domicilio'] ?? null,
+        ];
     }
 
     /**

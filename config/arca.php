@@ -18,4 +18,31 @@ return [
     'cert_path' => env('ARCA_CERT_PATH', storage_path('app/arca/arca.crt')),
     'key_path' => env('ARCA_KEY_PATH', storage_path('app/arca/arca.key')),
     'key_passphrase' => env('ARCA_KEY_PASSPHRASE'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Padrones - WSN oficiales por tipo de operación
+    |--------------------------------------------------------------------------
+    |
+    | El WSN (Web Service Name) que se envía en el TRA debe coincidir
+    | exactamente con el servicio al que está autorizado el certificado en ARCA.
+    | Un valor incorrecto produce: "Computador no autorizado a acceder al servicio".
+    |
+    | Catálogo oficial: https://www.afip.gob.ar/ws/documentacion/catalogo.asp
+    |
+    */
+    'padron' => [
+        'services' => [
+            // Consulta jurídica por CUIT  → endpoint padron/v1/persona
+            // ws_sr_padron_a4 = PersonaServiceA4 (personas jurídicas por CUIT)
+            'cuit' => env('ARCA_PADRON_SERVICE_CUIT', 'ws_sr_padron_a4'),
+
+            // Consulta persona física por CUIL → endpoint PersonaServiceA13
+            'cuil' => env('ARCA_PADRON_SERVICE_CUIL', 'ws_sr_padron_a13'),
+
+            // Consulta por DNI → endpoint personaServiceA13 (getIdPersonaListByDocumento)
+            // Usa el mismo WSN que CUIL; opera con getIdPersonaListByDocumento → getPersona.
+            'dni' => env('ARCA_PADRON_SERVICE_DNI', 'ws_sr_padron_a13'),
+        ],
+    ],
 ];

@@ -7,12 +7,13 @@ namespace Mause\LaravelArca\Modules;
 use DateTime;
 use DateTimeZone;
 use Illuminate\Support\Facades\Cache;
+use Mause\LaravelArca\Contracts\WsaaInterface;
 
 /**
  * WSAA - WebService de Autenticación y Autorización.
  * Maneja la generación de TRA, firma CMS y solicitud de TA.
  */
-final class Wsaa
+final class Wsaa implements WsaaInterface
 {
     private string $certPath;
 
